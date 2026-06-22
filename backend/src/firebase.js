@@ -1,39 +1,50 @@
 const admin = require('firebase-admin');
 
-// Initialize Firebase Admin
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    }),
-  });
-}
+// Initialize Firebase Admin — lazy init เมื่อมี credentials
+let db = null;
 
-const db = admin.firestore();
+function getDb() {
+  if (db) return db;
+
+  if (!process.env.FIREBASE_PROJECT_ID || !process.env.FIREBASE_PRIVATE_KEY) {
+    console.warn('⚠️  Firebase credentials not set — DB calls will be skipped');
+    return null;
+  }
+
+  if (!admin.apps.length) {
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      }),
+    });
+  }
+
+  db = admin.firestore();
+  return db;
+}
 
 // ============================================================
 // USER FUNCTIONS
 // ============================================================
 
-/**
- * ดึงข้อมูล user จาก LINE userId
- */
 async function getUser(lineUserId) {
+  const db = getDb();
+  if (!db) return null;
   const doc = await db.collection('users').doc(lineUserId).get();
   return doc.exists ? { id: doc.id, ...doc.data() } : null;
 }
 
-/**
- * สร้าง user ใหม่ตอนแอด LINE OA
- */
 async function createUser(lineUserId, displayName) {
+  const db = getDb();
+  if (!db) return { lineUserId, displayName, children: [] };
+
   const userData = {
     lineUserId,
     displayName,
     children: [],
-    waterReminderTime: '14:00', // default บ่ายสองโมง
+    waterReminderTime: '14:00',
     consent: true,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
   };
@@ -45,29 +56,25 @@ async function createUser(lineUserId, displayName) {
 // CHILDREN FUNCTIONS
 // ============================================================
 
-/**
- * เพิ่มลูกให้ user
- * birthdate format: "YYYY-MM-DD"
- */
 async function addChild(lineUserId, childData) {
+  const db = getDb();
   const child = {
-    id: Date.now().toString(), // simple unique id
+    id: Date.now().toString(),
     name: childData.name || null,
-    birthdate: childData.birthdate, // "2024-08-15"
+    birthdate: childData.birthdate,
     gender: childData.gender || null,
     createdAt: new Date().toISOString(),
   };
 
-  await db.collection('users').doc(lineUserId).update({
-    children: admin.firestore.FieldValue.arrayUnion(child),
-  });
+  if (db) {
+    await db.collection('users').doc(lineUserId).update({
+      children: admin.firestore.FieldValue.arrayUnion(child),
+    });
+  }
 
   return child;
 }
 
-/**
- * คำนวณอายุลูกเป็นเดือน
- */
 function getAgeInMonths(birthdate) {
   const now = new Date();
   const birth = new Date(birthdate);
@@ -77,9 +84,6 @@ function getAgeInMonths(birthdate) {
   return Math.max(0, months);
 }
 
-/**
- * คำนวณอายุลูกเป็นสัปดาห์
- */
 function getAgeInWeeks(birthdate) {
   const now = new Date();
   const birth = new Date(birthdate);
@@ -87,28 +91,21 @@ function getAgeInWeeks(birthdate) {
   return Math.floor(diffMs / (1000 * 60 * 60 * 24 * 7));
 }
 
-/**
- * ดึง users ทั้งหมดที่มีลูก (สำหรับ cron job)
- */
 async function getAllUsersWithChildren() {
-  const snapshot = await db
-    .collection('users')
-    .where('children', '!=', [])
-    .get();
+  const db = getDb();
+  if (!db) return [];
+  const snapshot = await db.collection('users').where('children', '!=', []).get();
   return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
 }
 
-/**
- * อัปเดต waterReminderTime
- */
 async function updateWaterReminderTime(lineUserId, time) {
-  await db.collection('users').doc(lineUserId).update({
-    waterReminderTime: time,
-  });
+  const db = getDb();
+  if (!db) return;
+  await db.collection('users').doc(lineUserId).update({ waterReminderTime: time });
 }
 
 module.exports = {
-  db,
+  getDb,
   getUser,
   createUser,
   addChild,
